@@ -305,6 +305,8 @@ def nativeImageDockerSettings: Seq[Setting[_]] = dockerSettings ++ Seq(
   // If this is Some(…): run the native-image generation inside a Docker image
   // If this is None: run the native-image generation using a local GraalVM installation
   graalVMVersion := Some(GraalVersion),
+  graalVMContainerBuildImage := graalVMContainerBuildImage.value
+      .map(_ + "-java11"), // We want to use the Java 11 version of GraalVM
   graalVMNativeImageOptions ++= sharedNativeImageSettings({
       graalVMVersion.value match {
         case Some(_) => new File("/opt/docker/graal-resources/")
