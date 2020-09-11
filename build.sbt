@@ -32,21 +32,22 @@ inThisBuild(
 
 name := "cloudstate"
 
-// Should be in sync with the version used in Akka gRPC
-val GrpcJavaVersion = "1.29.0"
+val GrpcJavaVersion = "1.30.2" // Note: sync with gRPC version in Akka gRPC
 // Unfortunately we need to downgrade grpc-netty-shaded
 // in the proxy until we have a fix to make it work with
 // native-image
 val GrpcNettyShadedVersion = "1.28.1"
 val GraalAkkaVersion = "0.5.0"
-val AkkaVersion = "2.6.6"
-val AkkaHttpVersion = "10.1.12"
-val AkkaManagementVersion = "1.0.5"
+val AkkaVersion = "2.6.8"
+val AkkaHttpVersion = "10.1.12" // Note: sync with Akka HTTP version in Akka gRPC
+val AkkaManagementVersion = "1.0.8"
 val AkkaPersistenceCassandraVersion = "0.102"
 val AkkaPersistenceSpannerVersion = "1.0.0-RC3"
-val PrometheusClientVersion = "0.6.0"
+val PrometheusClientVersion = "0.9.0"
 val ScalaTestVersion = "3.0.8"
-val ProtobufVersion = "3.11.4" // We use this version because it is the latest which works with native-image 20
+val ProtobufVersion = "3.11.4" // Note: sync with Protobuf version in Akka gRPC and ScalaPB
+val JacksonDatabindVersion = "2.9.10.5"
+val Slf4jSimpleVersion = "1.7.30"
 val GraalVersion = "20.1.0"
 val DockerBaseImageVersion = "adoptopenjdk/openjdk11:debianslim-jre"
 val DockerBaseImageJavaLibraryPath = "${JAVA_HOME}/lib"
@@ -109,7 +110,6 @@ lazy val root = (project in file("."))
     `protocols`,
     `proxy`,
     `java-support`,
-    `scala-support`,
     `java-shopping-cart`,
     `java-pingpong`,
     `akka-client`,
@@ -412,7 +412,7 @@ lazy val `proxy` = (project in file("proxy"))
   )
 
 lazy val `proxy-core` = (project in file("proxy/core"))
-  .enablePlugins(DockerPlugin, AkkaGrpcPlugin, JavaAgent, AssemblyPlugin, GraalVMPlugin, BuildInfoPlugin)
+  .enablePlugins(DockerPlugin, AkkaGrpcPlugin, AssemblyPlugin, GraalVMPlugin, BuildInfoPlugin)
   .dependsOn(
     `graal-tools` % Provided, // Only needed for compilation
     testkit % Test
@@ -452,7 +452,7 @@ lazy val `proxy-core` = (project in file("proxy/core"))
         "com.thesamet.scalapb" %% "scalapb-runtime" % scalapb.compiler.Version.scalapbVersion % "protobuf",
         "io.prometheus" % "simpleclient" % PrometheusClientVersion,
         "io.prometheus" % "simpleclient_common" % PrometheusClientVersion,
-        "org.slf4j" % "slf4j-simple" % "1.7.26"
+        "org.slf4j" % "slf4j-simple" % Slf4jSimpleVersion
         //"ch.qos.logback"                 % "logback-classic"                   % "1.2.3", // Doesn't work well with SubstrateVM: https://github.com/vmencik/akka-graal-native/blob/master/README.md#logging
       ),
     PB.protoSources in Compile ++= {
@@ -461,7 +461,6 @@ lazy val `proxy-core` = (project in file("proxy/core"))
     },
     // For Google Cloud Pubsub API
     PB.protoSources in Compile += target.value / "protobuf_external" / "google" / "pubsub" / "v1",
-    javaAgents += "org.mortbay.jetty.alpn" % "jetty-alpn-agent" % "2.0.10" % "runtime;test",
     mainClass in Compile := Some("io.cloudstate.proxy.CloudStateProxyMain"),
     dockerSettings,
     fork in run := true,
@@ -472,11 +471,15 @@ lazy val `proxy-core` = (project in file("proxy/core"))
   )
 
 lazy val `proxy-spanner` = (project in file("proxy/spanner"))
-  .enablePlugins(DockerPlugin, JavaAgent, GraalVMPlugin)
-  .dependsOn(`proxy-core`)
+  .enablePlugins(DockerPlugin, GraalVMPlugin)
+  .dependsOn(
+    `proxy-core`,
+    `graal-tools` % Provided // only needed for compilation
+  )
   .settings(
     common,
     name := "cloudstate-proxy-spanner",
+    dependencyOverrides += "io.grpc" % "grpc-netty-shaded" % GrpcNettyShadedVersion,
     libraryDependencies ++= Seq(
         "com.lightbend.akka" %% "akka-persistence-spanner" % AkkaPersistenceSpannerVersion,
         akkaDependency("akka-cluster-typed"), // Transitive dependency of akka-persistence-spanner
@@ -490,11 +493,15 @@ lazy val `proxy-spanner` = (project in file("proxy/spanner"))
   )
 
 lazy val `proxy-cassandra` = (project in file("proxy/cassandra"))
-  .enablePlugins(DockerPlugin, JavaAgent, GraalVMPlugin)
-  .dependsOn(`proxy-core`)
+  .enablePlugins(DockerPlugin, GraalVMPlugin)
+  .dependsOn(
+    `proxy-core`,
+    `graal-tools` % Provided // only needed for compilation
+  )
   .settings(
     common,
     name := "cloudstate-proxy-cassandra",
+    dependencyOverrides += "io.grpc" % "grpc-netty-shaded" % GrpcNettyShadedVersion,
     libraryDependencies ++= Seq(
         akkaPersistenceCassandraDependency("akka-persistence-cassandra", ExclusionRule("com.github.jnr")),
         akkaPersistenceCassandraDependency("akka-persistence-cassandra-launcher") % Test
@@ -508,10 +515,14 @@ lazy val `proxy-cassandra` = (project in file("proxy/cassandra"))
   )
 
 lazy val `proxy-jdbc` = (project in file("proxy/jdbc"))
-  .dependsOn(`proxy-core`)
+  .dependsOn(
+    `proxy-core`,
+    `graal-tools` % Provided // only needed for compilation
+  )
   .settings(
     common,
     name := "cloudstate-proxy-jdbc",
+    dependencyOverrides += "io.grpc" % "grpc-netty-shaded" % GrpcNettyShadedVersion,
     libraryDependencies ++= Seq(
         "com.github.dnvriend" %% "akka-persistence-jdbc" % "3.5.2"
       ),
@@ -520,11 +531,15 @@ lazy val `proxy-jdbc` = (project in file("proxy/jdbc"))
   )
 
 lazy val `proxy-postgres` = (project in file("proxy/postgres"))
-  .enablePlugins(DockerPlugin, JavaAgent, GraalVMPlugin, AssemblyPlugin)
-  .dependsOn(`proxy-jdbc`)
+  .enablePlugins(DockerPlugin, GraalVMPlugin, AssemblyPlugin)
+  .dependsOn(
+    `proxy-jdbc`,
+    `graal-tools` % Provided // only needed for compilation
+  )
   .settings(
     common,
     name := "cloudstate-proxy-postgres",
+    dependencyOverrides += "io.grpc" % "grpc-netty-shaded" % GrpcNettyShadedVersion,
     libraryDependencies ++= Seq(
         "org.postgresql" % "postgresql" % "42.2.6"
       ),
@@ -570,7 +585,7 @@ lazy val operator = (project in file("operator"))
         akkaDependency("akka-slf4j"),
         akkaHttpDependency("akka-http"),
         "io.skuber" %% "skuber" % "2.4.0",
-        "ch.qos.logback" % "logback-classic" % "1.2.3" // Doesn't work well with SubstrateVM, use "org.slf4j"           % "slf4j-simple"     % "1.7.26" instead
+        "ch.qos.logback" % "logback-classic" % "1.2.3" // Doesn't work well with SubstrateVM, use slf4j-simple instead
       ),
     dockerSettings,
     dockerExposedPorts := Nil,
@@ -630,8 +645,8 @@ lazy val `java-support` = (project in file("java-support"))
         akkaDependency("akka-stream-testkit") % Test,
         akkaHttpDependency("akka-http-testkit") % Test,
         "com.thesamet.scalapb" %% "scalapb-runtime" % scalapb.compiler.Version.scalapbVersion % "protobuf",
-        "org.slf4j" % "slf4j-simple" % "1.7.26",
-        "com.fasterxml.jackson.core" % "jackson-databind" % "2.9.9.3"
+        "org.slf4j" % "slf4j-simple" % Slf4jSimpleVersion,
+        "com.fasterxml.jackson.core" % "jackson-databind" % JacksonDatabindVersion
       ),
     javacOptions in Compile ++= Seq("-encoding", "UTF-8"),
     javacOptions in (Compile, compile) ++= Seq("-source", "1.8", "-target", "1.8"),
@@ -651,60 +666,6 @@ lazy val `java-support` = (project in file("java-support"))
         PB.targets += PB.gens.java -> crossTarget.value / "akka-grpc" / "test"
       )
     )
-  )
-
-lazy val `scala-support` = (project in file("scala-support"))
-  .enablePlugins(AkkaGrpcPlugin, BuildInfoPlugin)
-  .settings(
-    name := "cloudstate-scala-support",
-    dynverTagPrefix := "scala-support-",
-    common,
-    crossPaths := false,
-    publishMavenStyle := true,
-    bintrayPackage := name.value,
-    buildInfoKeys := Seq[BuildInfoKey](name, version),
-    buildInfoPackage := "io.cloudstate.scalasupport",
-    // Generate javadocs by just including non generated Java sources
-    sourceDirectories in (Compile, doc) := Seq((javaSource in Compile).value),
-    sources in (Compile, doc) := {
-      val javaSourceDir = (javaSource in Compile).value.getAbsolutePath
-      (sources in (Compile, doc)).value.filter(_.getAbsolutePath.startsWith(javaSourceDir))
-    },
-    // javadoc (I think java 9 onwards) refuses to compile javadocs if it can't compile the entire source path.
-    // but since we have java files depending on Scala files, we need to include ourselves on the classpath.
-    dependencyClasspath in (Compile, doc) := (fullClasspath in Compile).value,
-    javacOptions in (Compile, doc) ++= Seq(
-        "-overview",
-        ((javaSource in Compile).value / "overview.html").getAbsolutePath,
-        "-notimestamp",
-        "-doctitle",
-        "CloudState Scala Support"
-      ),
-    libraryDependencies ++= Seq(
-        akkaDependency("akka-stream"),
-        akkaDependency("akka-slf4j"),
-        akkaDependency("akka-discovery"),
-        akkaHttpDependency("akka-http"),
-        akkaHttpDependency("akka-http-spray-json"),
-        akkaHttpDependency("akka-http-core"),
-        akkaHttpDependency("akka-http2-support"),
-        "com.google.protobuf" % "protobuf-java" % ProtobufVersion % "protobuf",
-        "com.google.protobuf" % "protobuf-java-util" % ProtobufVersion,
-        "org.scalatest" %% "scalatest" % ScalaTestVersion % Test,
-        akkaDependency("akka-testkit") % Test,
-        akkaDependency("akka-stream-testkit") % Test,
-        akkaHttpDependency("akka-http-testkit") % Test,
-        "com.thesamet.scalapb" %% "scalapb-runtime" % scalapb.compiler.Version.scalapbVersion % "protobuf",
-        "org.slf4j" % "slf4j-simple" % "1.7.26",
-        "com.fasterxml.jackson.core" % "jackson-databind" % "2.9.9.3"
-      ),
-    javacOptions in Compile ++= Seq("-encoding", "UTF-8"),
-    akkaGrpcGeneratedSources in Compile := Seq(AkkaGrpc.Server),
-    akkaGrpcGeneratedLanguages in Compile := Seq(AkkaGrpc.Scala), // FIXME should be Java, but here be dragons
-    PB.protoSources in Compile ++= {
-      val baseDir = (baseDirectory in ThisBuild).value / "protocols"
-      Seq(baseDir / "protocol", baseDir / "frontend")
-    }
   )
 
 lazy val `java-shopping-cart` = (project in file("samples/java-shopping-cart"))
@@ -745,20 +706,6 @@ lazy val `java-pingpong` = (project in file("samples/java-pingpong"))
       ),
     javacOptions in Compile ++= Seq("-encoding", "UTF-8", "-source", "1.8", "-target", "1.8"),
     assemblySettings("java-pingpong.jar")
-  )
-
-lazy val `scala-shopping-cart` = (project in file("samples/scala-shopping-cart"))
-  .dependsOn(`scala-support`)
-  .enablePlugins(AkkaGrpcPlugin, DockerPlugin, JavaAppPackaging)
-  .settings(
-    name := "scala-shopping-cart",
-    dockerSettings,
-    PB.generate in Compile := (PB.generate in Compile).dependsOn(PB.generate in (`scala-support`, Compile)).value,
-    PB.protoSources in Compile ++= {
-      val baseDir = (baseDirectory in ThisBuild).value / "protocols"
-      Seq(baseDir / "frontend", baseDir / "example")
-    },
-    assemblySettings("scala-shopping-cart.jar")
   )
 
 lazy val `akka-client` = (project in file("samples/akka-client"))
@@ -836,7 +783,7 @@ lazy val `tck` = (project in file("tck"))
     javaOptions in IntegrationTest := sys.props.get("config.resource").map(r => s"-Dconfig.resource=$r").toSeq,
     parallelExecution in IntegrationTest := false,
     executeTests in IntegrationTest := (executeTests in IntegrationTest)
-        .dependsOn(`proxy-core` / assembly, `java-shopping-cart` / assembly, `scala-shopping-cart` / assembly)
+        .dependsOn(`proxy-core` / assembly, `java-shopping-cart` / assembly)
         .value
   )
 
