@@ -33,13 +33,13 @@ class TCK extends Suites({
     case _ => // All good
   }
 
-   combinations.
+  combinations.
     iterator.
     asScala.
     filter(section => verify(section.getString("name"))).
     map(c => new ManagedCloudStateTCK(TckConfiguration.fromConfig(c))).
     toVector
-  }: _*) with SequentialNestedSuiteExecution
+}: _*) with SequentialNestedSuiteExecution
 
 object ManagedCloudStateTCK {
   def settings(config: TckConfiguration): CloudStateTCK.Settings = {
@@ -56,10 +56,15 @@ class ManagedCloudStateTCK(config: TckConfiguration) extends CloudStateTCK("for 
 
   val processes: TckProcesses = TckProcesses.create(config)
 
-  override def beforeAll(): Unit = {
+  override def beforeAll(): Unit = try {
     processes.service.start()
     super.beforeAll()
     processes.proxy.start()
+  } catch {
+    case error: Throwable =>
+      processes.service.logs("service")
+      processes.proxy.logs("proxy")
+      throw error
   }
 
   override def afterAll(): Unit = {

@@ -1,6 +1,21 @@
 version: 2.1
 # CircleCi Build Config for CloudState
 commands:
+  install-java-11:
+    description: install openjdk-11
+    steps:
+    - run:
+        name: Install java 11
+        command: |
+          wget https://github.com/AdoptOpenJDK/openjdk11-binaries/releases/download/jdk-11.0.8%2B10/OpenJDK11U-jdk_x64_linux_hotspot_11.0.8_10.tar.gz -O /tmp/openjdk-11.tar.gz
+
+          sudo mkdir -p /usr/lib/jvm
+          sudo tar xfvz /tmp/openjdk-11.tar.gz --directory /usr/lib/jvm
+          rm -f /tmp/openjdk-11.tar.gz
+
+          sudo sh -c 'for bin in /usr/lib/jvm/jdk-11.0.8+10/bin/*; do update-alternatives --install /usr/bin/$(basename $bin) $(basename $bin) $bin 100; done'
+          sudo sh -c 'for bin in /usr/lib/jvm/jdk-11.0.8+10/bin/*; do update-alternatives --set $(basename $bin) $bin; done'
+
   setup_sbt:
     description: "Set up sbt"
     parameters:
@@ -57,20 +72,21 @@ commands:
 
 jobs:
 
-  build-core-native-images:
+  build-core-native-image:
     machine: true
     resource_class: large
-    description: "Build core native images"
+    description: "Build core native image"
     steps:
     - checkout
+    - install-java-11
     - setup_sbt
     - restore_sbt_cache
     - run:
-        name: Build sbt native images
-        command: sbt "dockerBuildNativeDevMode publishLocal" "dockerBuildNativeInMemory publishLocal"
+        name: Build sbt native image
+        command: sbt "dockerBuildNativeCore publishLocal"
     - save_docker_image:
         tar_file: cloudstate-proxy-native-core.tar
-        docker_image: cloudstateio/cloudstate-proxy-native-in-memory:latest cloudstateio/cloudstate-proxy-native-dev-mode:latest
+        docker_image: cloudstateio/cloudstate-proxy-native-core:latest
     - persist_to_workspace:
         root: /tmp/workspace
         paths:
@@ -83,6 +99,7 @@ jobs:
     description: "Build postgres native images"
     steps:
     - checkout
+    - install-java-11
     - setup_sbt
     - restore_sbt_cache
     - run:
@@ -103,6 +120,7 @@ jobs:
     description: "Build cassandra native images"
     steps:
     - checkout
+    - install-java-11
     - setup_sbt
     - restore_sbt_cache
     - run:
@@ -119,7 +137,7 @@ jobs:
 
   build-sbt-images:
     docker:
-    - image: circleci/openjdk:8
+    - image: cimg/openjdk:11.0
     description: "Build sbt non-native images"
     steps:
     - checkout
@@ -129,14 +147,14 @@ jobs:
     - run:
         name: Build sbt images
         command: |
-          sbt 'dockerBuildDevMode publishLocal' \
-            'dockerBuildInMemory publishLocal' \
+          sbt 'dockerBuildCore publishLocal' \
             'dockerBuildPostgres publishLocal' \
             'dockerBuildCassandra publishLocal' \
-            java-shopping-cart/docker:publishLocal
+            java-shopping-cart/docker:publishLocal \
+            java-eventsourced-shopping-cart/docker:publishLocal
     - save_docker_image:
         tar_file: cloudstate-sbt-images.tar
-        docker_image: cloudstateio/cloudstate-proxy-dev-mode:latest cloudstateio/cloudstate-proxy-in-memory:latest cloudstateio/cloudstate-proxy-postgres:latest cloudstateio/cloudstate-proxy-cassandra:latest cloudstateio/java-shopping-cart:latest
+        docker_image: cloudstateio/cloudstate-proxy-core:latest cloudstateio/cloudstate-proxy-postgres:latest cloudstateio/cloudstate-proxy-cassandra:latest cloudstateio/java-shopping-cart:latest cloudstateio/java-eventsourced-shopping-cart:latest
     - persist_to_workspace:
         root: /tmp/workspace
         paths:
@@ -179,6 +197,7 @@ jobs:
     description: "native image tck tests"
     steps:
       - checkout
+      - install-java-11
       - setup_sbt
       - restore_sbt_cache
       - attach_workspace:
@@ -231,14 +250,20 @@ jobs:
           name: Install Cassandra
           command: bin/install-cassandra.sh
       - run:
-          name: Run shopping cart test (InMemory)
+          name: Run value-based shopping cart test (InMemory)
           command: bin/run-java-shopping-cart-test.sh InMemory --no-build
       - run:
-          name: Run shopping cart test (Postgres)
+          name: Run value-based shopping cart test (Postgres)
           command: bin/run-java-shopping-cart-test.sh Postgres --no-build
       - run:
-          name: Run shopping cart test (Cassandra)
-          command: bin/run-java-shopping-cart-test.sh Cassandra --no-build
+          name: Run eventsourced shopping cart test (InMemory)
+          command: bin/run-java-eventsourced-shopping-cart-test.sh InMemory --no-build
+      - run:
+          name: Run eventsourced shopping cart test (Postgres)
+          command: bin/run-java-eventsourced-shopping-cart-test.sh Postgres --no-build
+      - run:
+          name: Run eventsourced shopping cart test (Cassandra)
+          command: bin/run-java-eventsourced-shopping-cart-test.sh Cassandra --no-build
 
   native-image-smoke-test:
     parameters:
@@ -282,6 +307,9 @@ jobs:
           - run:
               name: Load in memory image
               command: docker image load < /tmp/workspace/cloudstate-proxy-native-core.tar
+          - run:
+              name: Run value-based shopping cart test (InMemory)
+              command: bin/run-java-shopping-cart-test.sh InMemory --no-build
       - when:
           condition:
             equal: [ Postgres, << parameters.proxy-store >> ]
@@ -291,6 +319,9 @@ jobs:
                 command: |
                   bin/install-postgres.sh
                   docker image load < /tmp/workspace/cloudstate-proxy-native-postgres.tar
+            - run:
+                name: Run value-based shopping cart test (Postgres)
+                command: bin/run-java-shopping-cart-test.sh Postgres --no-build
       - when:
           condition:
             equal: [ Cassandra, << parameters.proxy-store >> ]
@@ -301,8 +332,8 @@ jobs:
                   bin/install-cassandra.sh
                   docker image load < /tmp/workspace/cloudstate-proxy-native-cassandra.tar
       - run:
-          name: Run shopping cart test (<< parameters.proxy-store >>)
-          command: bin/run-java-shopping-cart-test.sh << parameters.proxy-store >> --no-build
+          name: Run eventsourced shopping cart test (<< parameters.proxy-store >>)
+          command: bin/run-java-eventsourced-shopping-cart-test.sh << parameters.proxy-store >> --no-build
 
   publish-native-images:
     machine: true
@@ -319,8 +350,7 @@ jobs:
           name: Push docker images
           command: |
             echo "$DOCKER_PASSWORD" | docker login -u cloudstatebot --password-stdin
-            docker push cloudstateio/cloudstate-proxy-native-dev-mode:latest
-            docker push cloudstateio/cloudstate-proxy-native-in-memory:latest
+            docker push cloudstateio/cloudstate-proxy-native-core:latest
             docker push cloudstateio/cloudstate-proxy-native-postgres:latest
             docker push cloudstateio/cloudstate-proxy-native-cassandra:latest
 
@@ -329,13 +359,13 @@ workflows:
     jobs:
       - build-operator
       - build-sbt-images
-      - build-core-native-images
+      - build-core-native-image
       - build-postgres-native-image
       - build-cassandra-native-image
       - native-image-it-test:
           name: Native-image TCK integration tests
           requires:
-            - build-core-native-images
+            - build-core-native-image
       - minikube-smoke-test:
           name: Minikube smoke test
           requires:
@@ -347,7 +377,7 @@ workflows:
           requires:
           - build-operator
           - build-sbt-images
-          - build-core-native-images
+          - build-core-native-image
       - native-image-smoke-test:
           name: Native-image Postgres smoke test
           proxy-store: Postgres
@@ -365,7 +395,7 @@ workflows:
       - publish-native-images:
           name: Publish native images to docker hub
           requires:
-            - build-core-native-images
+            - build-core-native-image
             - build-postgres-native-image
             - build-cassandra-native-image
           filters:

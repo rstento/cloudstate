@@ -21,7 +21,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// StatefulStoreSpec defines the desired state of StatefulStore
+// StatefulStoreSpec defines the desired state of StatefulStore.
 type StatefulStoreSpec struct {
 	// InMemory store will keep everything in memory. This is the simplest
 	// option to get started, but must not be used in production.
@@ -53,9 +53,13 @@ type PostgresStore struct {
 	// +optional
 	Port int32 `json:"port,omitempty"`
 
-	// Credentials for the postgres instance.
+	// Credentials for the Postgres instance.
 	// +optional
 	Credentials *PostgresCredentials `json:"credentials,omitempty"`
+
+	// SSL configuration for the Postgres connection.
+	// +optional
+	SSL *PostgresSSL `json:"ssl,omitempty"`
 
 	// GoogleCloudSQL may used to automatically provision a Google CloudSQL instance.
 	// Do not specify a host, port or credentials if this is used.
@@ -63,7 +67,7 @@ type PostgresStore struct {
 	GoogleCloudSQL *GoogleCloudSQLPostgresStore `json:"googleCloudSql,omitempty"`
 }
 
-// PostgresCredentials is the credentials for a postgres instance.
+// PostgresCredentials is the credentials for a Postgres instance.
 type PostgresCredentials struct {
 	// Secret is the name of a secret in the local namespace to load the credentials from.
 	// +optional
@@ -82,6 +86,68 @@ type PostgresCredentials struct {
 	DatabaseKey string `json:"databaseKey,omitempty"`
 }
 
+// PostgressSSL is the configuration for Postgres SSL connections.
+type PostgresSSL struct {
+	// Mode is the mode that should be used for SSL.
+	// The value here matches the modes supported by the postgres libpq client library:
+	// https://www.postgresql.org/docs/9.1/libpq-ssl.html
+	// Valid values are disable, allow, prefer, require, verify-ca and verify-full. Defaults to disable.
+	// +optional
+	Mode PostgresSSLMode `json:"mode,omitempty"`
+
+	// Secret is the secret that contain any SSL certificates or keys.
+	// +optional
+	Secret *corev1.LocalObjectReference `json:"secret,omitempty"`
+
+	// RootCert is the key of the root certificate in the secret. This must be a PEM encoded X509 certificate.
+	// +optional
+	RootCert string `json:"rootCert,omitempty"`
+
+	// Cert is the key of the client certificate in the secret. This must be a PEM encoded X509 certificate.
+	// It is ignored if using a PKCS-12 keychain.
+	// +optional
+	Cert string `json:"cert,omitempty"`
+
+	// Key is the key of the private key for the client to use in the secret. This must be a PKCS-12 keychain or a
+	// PKCS-8 DER encoded key. If encrypted, the password should be specified in sslPassword.
+	// +optional
+	Key string `json:"key,omitempty"`
+
+	// Password is the password to use to decrypt the sslKey.
+	// +optional
+	Password string `json:"password,omitempty"`
+}
+
+// PostgresSSLMode is the mode for SSL in postgres.
+// +kubebuilder:validation:Enum=disable;allow;prefer;require;verify-ca;verify-full
+type PostgresSSLMode string
+
+const (
+	// PostgresSSLModeDisable disable SSL, use if you don't care about security and don't want to pay the overhead
+	// for encryption.
+	PostgresSSLModeDisable PostgresSSLMode = "disable"
+
+	// PostgresSSLModeAllow allow SSL, use if you don't care about security but will pay the overhead for encryption
+	// if the server insists on it.
+	PostgresSSLModeAllow PostgresSSLMode = "allow"
+
+	// PostgresSSLModePrefer prefer SSL, use if you don't care about encryption but will pay the overhead of encryption
+	// if the server supports it.
+	PostgresSSLModePrefer PostgresSSLMode = "prefer"
+
+	// PostgresSSLModeRequire require SSL, use if you want your data to be encrypted, and you accept the overhead. You
+	// trust that the network will make sure you always connect to the server you want.
+	PostgresSSLModeRequire PostgresSSLMode = "require"
+
+	// PostgresSSLModeVerifyCA verify CA SSL, use if you want your data encrypted, and you accept the overhead. You
+	// want to be sure that you connect to a server that you trust.
+	PostgresSSLModeVerifyCA PostgresSSLMode = "verify-ca"
+
+	// PostgresSSLModeVerifyFull verify full SSL, use if you want your data encrypted, and you accept the overhead. You
+	// want to be sure that you connect to a server you trust, and that it's the one you specify.
+	PostgresSSLModeVerifyFull PostgresSSLMode = "verify-full"
+)
+
 // GoogleCloudSQLPostgresStore creates a managed Postgres instance for the StatefulService.
 type GoogleCloudSQLPostgresStore struct {
 	// The name of the Cloud SQL instance. If not specified, the name of the stateful store resource
@@ -89,7 +155,7 @@ type GoogleCloudSQLPostgresStore struct {
 	// +optional
 	Name string `json:"name,omitempty"`
 
-	// The number of cores the postgres instance should use.
+	// The number of cores the Postgres instance should use.
 	// Must be 1, or an even number between 2 and 64.
 	// Defaults to 1.
 	// Modifiable after creation but will take store offline for several minutes.
@@ -98,9 +164,8 @@ type GoogleCloudSQLPostgresStore struct {
 	// +optional
 	Cores int32 `json:"cores,omitempty"`
 
-	// The amount of memory the postgres instance should have.
-	// Must be between 0.9 GiB and 6.5 GiB per vCPU, and must be
-	// a multiple of 256 MiB, and at least 3.75 GiB.
+	// The amount of memory the Postgres instance should have.
+	// Must be between 0.9 GiB and 6.5 GiB per vCPU, and must be	// a multiple of 256 MiB, and at least 3.75 GiB.
 	// Defaults to 3.75 GiB.
 	// Modifiable after creation but will take store offline for several minutes.
 	// +optional
@@ -156,7 +221,7 @@ const (
 // SpannerStore simply indicates the use of a Cloudstate-managed Spanner store.
 type SpannerStore struct {
 	// Project is the GCP project to use.
-	Project string `json:"string"`
+	Project string `json:"project"`
 
 	// Instance is the Spanner instance id.
 	Instance string `json:"instance"`
@@ -228,7 +293,7 @@ type CassandraCredentials struct {
 	KeyspaceKey string `json:"keyspaceKey,omitempty"`
 }
 
-// StatefulStoreStatus defines the observed state of StatefulStore
+// StatefulStoreStatus defines the observed state of StatefulStore.
 type StatefulStoreStatus struct {
 	// Summary of the current status.
 	// +optional
@@ -242,7 +307,7 @@ type StatefulStoreStatus struct {
 	Postgres *PostgresStoreStatus `json:"postgres,omitempty"`
 }
 
-// PostgresStoreStatus defines the state of a postgres store
+// PostgresStoreStatus defines the state of a postgres store.
 type PostgresStoreStatus struct {
 
 	// GoogleCloudSQL is the status of the managed Google Cloud SQL Postgres instance.
@@ -250,14 +315,14 @@ type PostgresStoreStatus struct {
 	GoogleCloudSQL *GoogleCloudSQLPostgresStoreStatus `json:"googleCloudSql,omitempty"`
 }
 
-// GoogleCloudSQLPostgresStoreStatus defines the status of a Google Cloud SQL postgres store
+// GoogleCloudSQLPostgresStoreStatus defines the status of a Google Cloud SQL postgres store.
 type GoogleCloudSQLPostgresStoreStatus struct {
 
 	// InstanceName is the name of the instance.
 	InstanceName string `json:"instanceName"`
 }
 
-// StatefulStore is the Schema for the statefulstores API
+// StatefulStore is the Schema for the statefulstores API.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
@@ -270,7 +335,7 @@ type StatefulStore struct {
 	Status StatefulStoreStatus `json:"status,omitempty"`
 }
 
-// StatefulStoreList contains a list of StatefulStore
+// StatefulStoreList contains a list of StatefulStore.
 // +kubebuilder:object:root=true
 type StatefulStoreList struct {
 	metav1.TypeMeta `json:",inline"`

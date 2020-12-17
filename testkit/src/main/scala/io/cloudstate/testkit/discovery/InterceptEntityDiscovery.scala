@@ -19,8 +19,14 @@ package io.cloudstate.testkit.discovery
 import akka.http.scaladsl.model.{HttpRequest, HttpResponse}
 import akka.testkit.{TestKit, TestProbe}
 import com.google.protobuf.empty.{Empty => ScalaPbEmpty}
+import io.cloudstate.protocol.action.ActionProtocol
+import io.cloudstate.protocol.crdt.Crdt
+import io.cloudstate.protocol.value_entity.ValueEntity
 import io.cloudstate.protocol.entity._
+import io.cloudstate.protocol.event_sourced.EventSourced
+import io.cloudstate.testkit.BuildInfo
 import io.cloudstate.testkit.InterceptService.InterceptorContext
+
 import scala.concurrent.duration.FiniteDuration
 import scala.concurrent.{Await, Future}
 import scala.util.{Failure, Success}
@@ -72,9 +78,17 @@ object InterceptEntityDiscovery {
     def expectEntitySpec(): EntitySpec = out.expectMsgType[EntitySpec]
   }
 
+  val testProxyInfo: ProxyInfo = ProxyInfo(
+    protocolMajorVersion = BuildInfo.protocolMajorVersion,
+    protocolMinorVersion = BuildInfo.protocolMinorVersion,
+    proxyName = BuildInfo.name,
+    proxyVersion = BuildInfo.version,
+    supportedEntityTypes = Seq(ActionProtocol.name, Crdt.name, EventSourced.name, ValueEntity.name)
+  )
+
   def expectOnline(context: InterceptorContext, timeout: FiniteDuration): Unit = {
     val client = EntityDiscoveryClient(context.clientSettings)(context.system)
-    try TestKit.awaitCond(Await.ready(client.discover(ProxyInfo()), timeout).value.get.isSuccess, timeout)
+    try TestKit.awaitCond(Await.ready(client.discover(testProxyInfo), timeout).value.get.isSuccess, timeout)
     finally client.close()
   }
 }

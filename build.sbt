@@ -32,17 +32,22 @@ inThisBuild(
 
 name := "cloudstate"
 
+val ProtocolMajorVersion = 0
+val ProtocolMinorVersion = 2
+
 val GrpcJavaVersion = "1.30.2" // Note: sync with gRPC version in Akka gRPC
 // Unfortunately we need to downgrade grpc-netty-shaded
 // in the proxy until we have a fix to make it work with
 // native-image
 val GrpcNettyShadedVersion = "1.28.1"
 val GraalAkkaVersion = "0.5.0"
-val AkkaVersion = "2.6.8"
+val AkkaVersion = "2.6.9"
 val AkkaHttpVersion = "10.1.12" // Note: sync with Akka HTTP version in Akka gRPC
 val AkkaManagementVersion = "1.0.8"
 val AkkaPersistenceCassandraVersion = "0.102"
-val AkkaPersistenceSpannerVersion = "1.0.0-RC3"
+val AkkaPersistenceJdbcVersion = "3.5.2"
+val AkkaPersistenceSpannerVersion = "1.0.0-RC4"
+val AkkaProjectionsVersion = "1.0.0"
 val PrometheusClientVersion = "0.9.0"
 val ScalaTestVersion = "3.0.8"
 val ProtobufVersion = "3.11.4" // Note: sync with Protobuf version in Akka gRPC and ScalaPB
@@ -72,6 +77,9 @@ def akkaDiscoveryDependency(name: String, excludeThese: ExclusionRule*) =
 
 def akkaPersistenceCassandraDependency(name: String, excludeThese: ExclusionRule*) =
   "com.typesafe.akka" %% name % AkkaPersistenceCassandraVersion excludeAll ((excludeTheseDependencies ++ excludeThese): _*)
+
+def akkaProjectionsDependency(name: String, excludeThese: ExclusionRule*) =
+  "com.lightbend.akka" %% name % AkkaProjectionsVersion excludeAll ((excludeTheseDependencies ++ excludeThese): _*)
 
 def common: Seq[Setting[_]] = automateHeaderSettings(Compile, Test) ++ Seq(
   headerMappings := headerMappings.value ++ Seq(
@@ -104,14 +112,15 @@ headerSources in Compile ++= {
 
 lazy val root = (project in file("."))
   .enablePlugins(NoPublish)
-// Don't forget to add your sbt module here!
-// A missing module here can lead to failing Travis test results
+  // Don't forget to add your sbt module here!
+  // A missing module here can lead to failing Travis test results
   .aggregate(
     `protocols`,
     `proxy`,
     `java-support`,
     `java-support-docs`,
     `java-support-tck`,
+    `java-eventsourced-shopping-cart`,
     `java-shopping-cart`,
     `java-pingpong`,
     `akka-client`,
@@ -122,17 +131,18 @@ lazy val root = (project in file("."))
   )
   .settings(common)
 
-val cloudstateProtocolsName = "cloudstate-protocols"
-val cloudstateTCKProtocolsName = "cloudstate-tck-protocols"
-
 lazy val protocols = (project in file("protocols"))
   .enablePlugins(NoPublish)
   .settings(
     name := "protocols",
     packageBin in Compile := {
       val base = baseDirectory.value
-      val cloudstateProtos = base / s"$cloudstateProtocolsName.zip"
-      val cloudstateTCKProtos = base / s"$cloudstateTCKProtocolsName.zip"
+      val targetDir = target.value
+      val releaseVersion = version.value
+      val cloudstateProtocolsName = s"cloudstate-protocols-$releaseVersion"
+      val cloudstateTCKProtocolsName = s"cloudstate-tck-protocols-$releaseVersion"
+      val cloudstateProtocolsZip = targetDir / s"$cloudstateProtocolsName.zip"
+      val cloudstateTCKProtocolsZip = targetDir / s"$cloudstateTCKProtocolsName.zip"
 
       def archiveStructure(topDirName: String, files: PathFinder): Seq[(File, String)] =
         files pair Path.relativeTo(base) map {
@@ -141,25 +151,30 @@ lazy val protocols = (project in file("protocols"))
 
       // Common Language Support Proto Dependencies
       IO.zip(
-        archiveStructure(cloudstateProtocolsName,
-                         (base / "frontend" ** "*.proto" +++
-                         base / "protocol" ** "*.proto")),
-        cloudstateProtos
+        archiveStructure(
+          cloudstateProtocolsName,
+          base / "frontend" ** "*.proto" +++
+          base / "protocol" ** "*.proto"
+        ),
+        cloudstateProtocolsZip
       )
 
       // Common TCK Language Support Proto Dependencies
-      IO.zip(archiveStructure(cloudstateTCKProtocolsName, base / "example" ** "*.proto"), cloudstateTCKProtos)
-
-      cloudstateProtos
-    },
-    cleanFiles ++= Seq(
-        baseDirectory.value / s"$cloudstateProtocolsName.zip",
-        baseDirectory.value / s"$cloudstateTCKProtocolsName.zip"
+      IO.zip(
+        archiveStructure(
+          cloudstateTCKProtocolsName,
+          base / "example" ** "*.proto" +++
+          base / "tck" ** "*.proto"
+        ),
+        cloudstateTCKProtocolsZip
       )
+
+      cloudstateProtocolsZip
+    }
   )
 
-lazy val proxyDockerBuild = settingKey[Option[(String, Option[String])]](
-  "Docker artifact name and configuration file which gets overridden by the buildProxy command"
+lazy val proxyDockerBuild = settingKey[Option[String]](
+  "Docker artifact name which gets overridden by the buildProxy command"
 )
 
 def dockerSettings: Seq[Setting[_]] = Seq(
@@ -173,7 +188,7 @@ def dockerSettings: Seq[Setting[_]] = Seq(
   dockerAlias := {
     val old = dockerAlias.value
     proxyDockerBuild.value match {
-      case Some((dockerName, _)) => old.withName(dockerName)
+      case Some(dockerName) => old.withName(dockerName)
       case None => old
     }
   },
@@ -198,27 +213,19 @@ def buildProxyHelp(commandName: String, name: String) =
      s"Execute the given docker scoped task (eg, publishLocal or publish) for the $name build of the proxy.")
   )
 
-def buildProxyCommand(commandName: String,
-                      project: => Project,
-                      name: String,
-                      configResource: Option[String],
-                      native: Boolean): Command = {
+def buildProxyCommand(commandName: String, project: => Project, name: String, native: Boolean): Command = {
   val cn =
     if (native) s"dockerBuildNative$commandName"
     else s"dockerBuild$commandName"
   val imageName =
     if (native) s"native-$name"
     else name
-  val configResourceSetting = configResource match {
-    case Some(resource) => "Some(\"" + resource + "\")"
-    case None => "None"
-  }
   Command.single(
     cn,
     buildProxyHelp(cn, name)
   ) { (state, command) =>
     List(
-      s"""set proxyDockerBuild in `${project.id}` := Some(("cloudstate-proxy-$imageName", $configResourceSetting))""",
+      s"""set proxyDockerBuild in `${project.id}` := Some("cloudstate-proxy-$imageName")""",
       s"""set graalVMDockerPublishLocalBuild in ThisBuild := $native""",
       s"${project.id}/docker:$command",
       s"set proxyDockerBuild in `${project.id}` := None"
@@ -227,25 +234,21 @@ def buildProxyCommand(commandName: String,
 }
 
 commands ++= Seq(
-  buildProxyCommand("DevMode", `proxy-core`, "dev-mode", Some("dev-mode.conf"), true),
-  buildProxyCommand("DevMode", `proxy-core`, "dev-mode", Some("dev-mode.conf"), false),
-  buildProxyCommand("NoStore", `proxy-core`, "no-store", Some("no-store.conf"), true),
-  buildProxyCommand("NoStore", `proxy-core`, "no-store", Some("no-store.conf"), false),
-  buildProxyCommand("InMemory", `proxy-core`, "in-memory", Some("in-memory.conf"), true),
-  buildProxyCommand("InMemory", `proxy-core`, "in-memory", Some("in-memory.conf"), false),
-  buildProxyCommand("Cassandra", `proxy-cassandra`, "cassandra", None, true),
-  buildProxyCommand("Cassandra", `proxy-cassandra`, "cassandra", None, false),
-  buildProxyCommand("Spanner", `proxy-spanner`, "spanner", None, true),
-  buildProxyCommand("Spanner", `proxy-spanner`, "spanner", None, false),
-  buildProxyCommand("Postgres", `proxy-postgres`, "postgres", None, true),
-  buildProxyCommand("Postgres", `proxy-postgres`, "postgres", None, false),
+  buildProxyCommand("Core", `proxy-core`, "core", true),
+  buildProxyCommand("Core", `proxy-core`, "core", false),
+  buildProxyCommand("Cassandra", `proxy-cassandra`, "cassandra", true),
+  buildProxyCommand("Cassandra", `proxy-cassandra`, "cassandra", false),
+  buildProxyCommand("Spanner", `proxy-spanner`, "spanner", true),
+  buildProxyCommand("Spanner", `proxy-spanner`, "spanner", false),
+  buildProxyCommand("Postgres", `proxy-postgres`, "postgres", true),
+  buildProxyCommand("Postgres", `proxy-postgres`, "postgres", false),
   Command.single("dockerBuildAllNonNative", buildProxyHelp("dockerBuildAllNonNative", "all non native")) {
     (state, command) =>
-      List("DevMode", "NoStore", "InMemory", "Cassandra", "Postgres", "Spanner")
+      List("Core", "Cassandra", "Postgres", "Spanner")
         .map(c => s"dockerBuild$c $command") ::: state
   },
   Command.single("dockerBuildAllNative", buildProxyHelp("dockerBuildAllNative", "all native")) { (state, command) =>
-    List("DevMode", "NoStore", "InMemory", "Cassandra", "Postgres", "Spanner")
+    List("Core", "Cassandra", "Postgres", "Spanner")
       .map(c => s"dockerBuildNative$c $command") ::: state
   }
 )
@@ -263,13 +266,9 @@ def nativeImageDockerSettings: Seq[Setting[_]] = dockerSettings ++ Seq(
     }, graalVMBuildServer.value),
   dockerEntrypoint := {
     val old = dockerEntrypoint.value
-    val withLibraryPath = if (graalVMDockerPublishLocalBuild.value) {
+    if (graalVMDockerPublishLocalBuild.value) {
       old :+ s"-Djava.library.path=${DockerBaseImageJavaLibraryPath}"
     } else old
-    proxyDockerBuild.value match {
-      case Some((_, Some(configResource))) => withLibraryPath :+ s"-Dconfig.resource=$configResource"
-      case _ => withLibraryPath
-    }
   }
 )
 
@@ -372,7 +371,12 @@ lazy val `proxy-core` = (project in file("proxy/core"))
   .settings(
     common,
     name := "cloudstate-proxy-core",
-    buildInfoKeys := Seq[BuildInfoKey](name, version),
+    buildInfoKeys := Seq[BuildInfoKey](
+        name,
+        version,
+        "protocolMajorVersion" -> ProtocolMajorVersion,
+        "protocolMinorVersion" -> ProtocolMinorVersion
+      ),
     buildInfoPackage := "io.cloudstate.proxy",
     dependencyOverrides += "io.grpc" % "grpc-netty-shaded" % GrpcNettyShadedVersion,
     libraryDependencies ++= Seq(
@@ -388,6 +392,7 @@ lazy val `proxy-core` = (project in file("proxy/core"))
         akkaDependency("akka-stream"),
         akkaDependency("akka-slf4j"),
         akkaDependency("akka-discovery"),
+        akkaDependency("akka-cluster-typed"),
         akkaHttpDependency("akka-http"),
         akkaHttpDependency("akka-http-spray-json"),
         akkaHttpDependency("akka-http-core"),
@@ -395,6 +400,9 @@ lazy val `proxy-core` = (project in file("proxy/core"))
         akkaDependency("akka-cluster-sharding", ExclusionRule("org.lmdbjava", "lmdbjava")),
         akkaManagementDependency("akka-management-cluster-bootstrap"),
         akkaDiscoveryDependency("akka-discovery-kubernetes-api"),
+        akkaProjectionsDependency("akka-projection-core"),
+        akkaProjectionsDependency("akka-projection-eventsourced"),
+        akkaProjectionsDependency("akka-projection-testkit"), // Needed for in memory support
         "com.google.protobuf" % "protobuf-java" % ProtobufVersion % "protobuf",
         "com.google.protobuf" % "protobuf-java-util" % ProtobufVersion,
         "org.scalatest" %% "scalatest" % ScalaTestVersion % Test,
@@ -435,7 +443,9 @@ lazy val `proxy-spanner` = (project in file("proxy/spanner"))
     libraryDependencies ++= Seq(
         "com.lightbend.akka" %% "akka-persistence-spanner" % AkkaPersistenceSpannerVersion,
         akkaDependency("akka-cluster-typed"), // Transitive dependency of akka-persistence-spanner
-        akkaDependency("akka-persistence-typed") // Transitive dependency of akka-persistence-spanner
+        akkaDependency("akka-persistence-typed"), // Transitive dependency of akka-persistence-spanner
+        akkaDependency("akka-actor-testkit-typed") % Test,
+        "org.scalatest" %% "scalatest" % ScalaTestVersion % Test
       ),
     fork in run := true,
     mainClass in Compile := Some("io.cloudstate.proxy.spanner.CloudstateSpannerProxyMain"),
@@ -456,7 +466,8 @@ lazy val `proxy-cassandra` = (project in file("proxy/cassandra"))
     dependencyOverrides += "io.grpc" % "grpc-netty-shaded" % GrpcNettyShadedVersion,
     libraryDependencies ++= Seq(
         akkaPersistenceCassandraDependency("akka-persistence-cassandra", ExclusionRule("com.github.jnr")),
-        akkaPersistenceCassandraDependency("akka-persistence-cassandra-launcher") % Test
+        akkaPersistenceCassandraDependency("akka-persistence-cassandra-launcher") % Test,
+        "com.lightbend.akka" %% "akka-projection-cassandra" % AkkaProjectionsVersion
       ),
     fork in run := true,
     mainClass in Compile := Some("io.cloudstate.proxy.CloudStateProxyMain"),
@@ -476,7 +487,9 @@ lazy val `proxy-jdbc` = (project in file("proxy/jdbc"))
     name := "cloudstate-proxy-jdbc",
     dependencyOverrides += "io.grpc" % "grpc-netty-shaded" % GrpcNettyShadedVersion,
     libraryDependencies ++= Seq(
-        "com.github.dnvriend" %% "akka-persistence-jdbc" % "3.5.2"
+        "com.github.dnvriend" %% "akka-persistence-jdbc" % AkkaPersistenceJdbcVersion,
+        "com.lightbend.akka" %% "akka-projection-slick" % AkkaProjectionsVersion,
+        "org.scalatest" %% "scalatest" % ScalaTestVersion % Test
       ),
     fork in run := true,
     mainClass in Compile := Some("io.cloudstate.proxy.CloudStateProxyMain")
@@ -564,7 +577,12 @@ lazy val `java-support` = (project in file("java-support"))
     crossPaths := false,
     publishMavenStyle := true,
     bintrayPackage := name.value,
-    buildInfoKeys := Seq[BuildInfoKey](name, version),
+    buildInfoKeys := Seq[BuildInfoKey](
+        name,
+        version,
+        "protocolMajorVersion" -> ProtocolMajorVersion,
+        "protocolMinorVersion" -> ProtocolMinorVersion
+      ),
     buildInfoPackage := "io.cloudstate.javasupport",
     // Generate javadocs by just including non generated Java sources
     sourceDirectories in (Compile, doc) := Seq((javaSource in Compile).value),
@@ -578,6 +596,7 @@ lazy val `java-support` = (project in file("java-support"))
     javacOptions in (Compile, doc) ++= Seq(
         "-overview",
         ((javaSource in Compile).value / "overview.html").getAbsolutePath,
+        "--no-module-directories",
         "-notimestamp",
         "-doctitle",
         "Cloudstate Java Support"
@@ -601,7 +620,7 @@ lazy val `java-support` = (project in file("java-support"))
         "com.fasterxml.jackson.core" % "jackson-databind" % JacksonDatabindVersion
       ),
     javacOptions in Compile ++= Seq("-encoding", "UTF-8"),
-    javacOptions in (Compile, compile) ++= Seq("-source", "1.8", "-target", "1.8"),
+    javacOptions in (Compile, compile) ++= Seq("-source", "11", "-target", "11"),
     akkaGrpcGeneratedSources in Compile := Seq(AkkaGrpc.Server),
     akkaGrpcGeneratedLanguages in Compile := Seq(AkkaGrpc.Scala), // FIXME should be Java, but here be dragons
     PB.protoSources in Compile ++= {
@@ -630,21 +649,41 @@ lazy val `java-support-docs` = (project in file("java-support/docs"))
     Test / PB.protoSources += (baseDirectory in ThisBuild).value / "protocols" / "frontend",
     Test / PB.protoSources += sourceDirectory.value / "modules" / "java" / "examples" / "proto",
     Test / PB.targets := Seq(PB.gens.java -> (Test / sourceManaged).value),
-    Compile / javacOptions ++= Seq("-encoding", "UTF-8", "-source", "1.8", "-target", "1.8")
+    Compile / javacOptions ++= Seq("-encoding", "UTF-8", "-source", "11", "-target", "11")
   )
 
 lazy val `java-support-tck` = (project in file("java-support/tck"))
-  .dependsOn(`java-support`, `java-shopping-cart`)
+  .dependsOn(`java-support`, `java-shopping-cart`, `java-eventsourced-shopping-cart`)
   .enablePlugins(AkkaGrpcPlugin, AssemblyPlugin, JavaAppPackaging, DockerPlugin, AutomateHeaderPlugin, NoPublish)
   .settings(
     name := "cloudstate-java-tck",
+    dynverTagPrefix := "java-support-",
     dockerSettings,
     mainClass in Compile := Some("io.cloudstate.javasupport.tck.JavaSupportTck"),
     akkaGrpcGeneratedLanguages := Seq(AkkaGrpc.Java),
     PB.protoSources in Compile += (baseDirectory in ThisBuild).value / "protocols" / "tck",
-    PB.targets in Compile := Seq(PB.gens.java -> (sourceManaged in Compile).value),
-    javacOptions in Compile ++= Seq("-encoding", "UTF-8", "-source", "1.8", "-target", "1.8"),
+    javacOptions in Compile ++= Seq("-encoding", "UTF-8", "-source", "11", "-target", "11"),
     assemblySettings("cloudstate-java-tck.jar")
+  )
+
+lazy val `java-eventsourced-shopping-cart` = (project in file("samples/java-eventsourced-shopping-cart"))
+  .dependsOn(`java-support`)
+  .enablePlugins(AkkaGrpcPlugin, AssemblyPlugin, JavaAppPackaging, DockerPlugin, AutomateHeaderPlugin, NoPublish)
+  .settings(
+    name := "java-eventsourced-shopping-cart",
+    dockerSettings,
+    mainClass in Compile := Some("io.cloudstate.samples.eventsourced.shoppingcart.Main"),
+    PB.generate in Compile := (PB.generate in Compile).dependsOn(PB.generate in (`java-support`, Compile)).value,
+    akkaGrpcGeneratedLanguages := Seq(AkkaGrpc.Java),
+    PB.protoSources in Compile ++= {
+      val baseDir = (baseDirectory in ThisBuild).value / "protocols"
+      Seq(baseDir / "frontend", baseDir / "example")
+    },
+    PB.targets in Compile := Seq(
+        PB.gens.java -> (sourceManaged in Compile).value
+      ),
+    javacOptions in Compile ++= Seq("-encoding", "UTF-8", "-source", "11", "-target", "11"),
+    assemblySettings("java-eventsourced-shopping-cart.jar")
   )
 
 lazy val `java-shopping-cart` = (project in file("samples/java-shopping-cart"))
@@ -663,7 +702,7 @@ lazy val `java-shopping-cart` = (project in file("samples/java-shopping-cart"))
     PB.targets in Compile := Seq(
         PB.gens.java -> (sourceManaged in Compile).value
       ),
-    javacOptions in Compile ++= Seq("-encoding", "UTF-8", "-source", "1.8", "-target", "1.8"),
+    javacOptions in Compile ++= Seq("-encoding", "UTF-8", "-source", "11", "-target", "11"),
     assemblySettings("java-shopping-cart.jar")
   )
 
@@ -683,7 +722,7 @@ lazy val `java-pingpong` = (project in file("samples/java-pingpong"))
     PB.targets in Compile := Seq(
         PB.gens.java -> (sourceManaged in Compile).value
       ),
-    javacOptions in Compile ++= Seq("-encoding", "UTF-8", "-source", "1.8", "-target", "1.8"),
+    javacOptions in Compile ++= Seq("-encoding", "UTF-8", "-source", "11", "-target", "11"),
     assemblySettings("java-pingpong.jar")
   )
 
@@ -721,10 +760,17 @@ lazy val `load-generator` = (project in file("samples/js-shopping-cart-load-gene
   )
 
 lazy val `testkit` = (project in file("testkit"))
-  .enablePlugins(AkkaGrpcPlugin)
+  .enablePlugins(AkkaGrpcPlugin, BuildInfoPlugin)
   .settings(
     common,
     name := "cloudstate-testkit",
+    buildInfoKeys := Seq[BuildInfoKey](
+        name,
+        version,
+        "protocolMajorVersion" -> ProtocolMajorVersion,
+        "protocolMinorVersion" -> ProtocolMinorVersion
+      ),
+    buildInfoPackage := "io.cloudstate.testkit",
     libraryDependencies ++= Seq(
         akkaDependency("akka-stream-testkit"),
         "com.google.protobuf" % "protobuf-java" % ProtobufVersion % "protobuf",

@@ -18,17 +18,19 @@ package io.cloudstate.testkit
 
 import akka.actor.ActorSystem
 import akka.http.scaladsl.Http
-import akka.testkit.{SocketUtil, TestKit, TestProbe}
+import akka.testkit.{TestKit, TestProbe}
 import com.typesafe.config.{Config, ConfigFactory}
 import io.cloudstate.testkit.discovery.TestEntityDiscoveryService
 import io.cloudstate.testkit.eventsourced.TestEventSourcedService
+import io.cloudstate.testkit.valueentity.TestValueEntityService
+
 import scala.concurrent.Await
 import scala.concurrent.duration._
 
 final class TestService {
   import TestService._
 
-  val port: Int = SocketUtil.temporaryLocalPort()
+  val port: Int = Sockets.temporaryLocalPort()
 
   val context = new TestServiceContext(port)
 
@@ -36,11 +38,13 @@ final class TestService {
 
   val eventSourced = new TestEventSourcedService(context)
 
+  val valueEntity = new TestValueEntityService(context)
+
   import context.system
 
   Await.result(
     Http().bindAndHandleAsync(
-      handler = entityDiscovery.handler orElse eventSourced.handler,
+      handler = entityDiscovery.handler orElse eventSourced.handler orElse valueEntity.handler,
       interface = "localhost",
       port = port
     ),

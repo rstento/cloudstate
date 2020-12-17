@@ -107,7 +107,7 @@ object Serve {
           case UserFunctionReply(Some(ClientAction(ClientAction.Action.Forward(_), _)), _, _) =>
             log.error("Cannot serialize forward reply, this should have been handled by the UserFunctionRouter")
             None
-          case UserFunctionReply(Some(ClientAction(ClientAction.Action.Failure(Failure(_, message, _)), _)), _, _) =>
+          case UserFunctionReply(Some(ClientAction(ClientAction.Action.Failure(Failure(_, message, _, _)), _)), _, _) =>
             log.error("User Function responded with a failure: {}", message)
             throw CommandException(message)
           case _ =>
@@ -116,13 +116,11 @@ object Serve {
         .collect(Function.unlift(identity))
 
       emitter match {
-        /*
         case Some(e) =>
           handler.mapAsync(4) {
             case Reply(Some(payload), metadata, _) =>
               e.emit(payload, method, metadata).map(_ => payload)
           }
-         */
         case _ => handler.map(_.payload.get)
       }
 
@@ -140,7 +138,6 @@ object Serve {
 
   def createRoute(entities: Seq[ServableEntity],
                   router: UserFunctionRouter,
-                  statsCollector: ActorRef,
                   entityDiscoveryClient: EntityDiscoveryClient,
                   fileDescriptors: Seq[FileDescriptor],
                   emitters: Map[String, Emitter])(
@@ -149,7 +146,7 @@ object Serve {
       ec: ExecutionContext
   ): PartialFunction[HttpRequest, Future[HttpResponse]] = {
     val log = Logging(sys.eventStream, Serve.getClass)
-    val grpcProxy = createGrpcApi(entities, router, statsCollector, entityDiscoveryClient, emitters)
+    val grpcProxy = createGrpcApi(entities, router, entityDiscoveryClient, emitters)
     val grpcHandler = Function.unlift { request: HttpRequest =>
       val asResponse = grpcProxy.andThen { futureResult =>
         Some(futureResult.map {
@@ -201,7 +198,6 @@ object Serve {
 
   private[this] final def createGrpcApi(entities: Seq[ServableEntity],
                                         router: UserFunctionRouter,
-                                        statsCollector: ActorRef,
                                         entityDiscoveryClient: EntityDiscoveryClient,
                                         emitters: Map[String, Emitter])(
       implicit sys: ActorSystem,
